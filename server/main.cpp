@@ -17,7 +17,8 @@ static int my_handler(HttpConnPtr conn)
     std::string body;
     
     if (conn->req_type() == HTTP_GET) {
-
+        if (conn->path() == "/save") 
+            RequestProcessor::SaveDB();
     } else if (conn->req_type() == HTTP_POST) {
         if (conn->in_threadpool()) {
             RequestProcessor::Process(conn->post_data(), body);
@@ -40,7 +41,7 @@ static void print_usage(const char *sexec)
            "\t-d --dir <path> [default ./]                  the db file load/save directory\n"
            "\t-l --log-file <filename> [default time.txt]   the log file name\n"
            "\t-L --log-level <level> [default info]         the log level, one in [debug|info|error]\n"
-          );
+          , sexec);
 }
 
 int main(int argc, char *argv[])
@@ -57,11 +58,12 @@ int main(int argc, char *argv[])
         {"port",     required_argument, 0,  'p' },
         {"log-file",     required_argument, 0,  'l' },
         {"log-level",     required_argument, 0,  'L' },
+        {      0,     0,     0,     0},  
     };
 
     int long_index = 0;
     int opt;
-    while((opt = getopt_long(argc, argv, "", long_options, &long_index)) != -1) {
+    while((opt = getopt_long(argc, argv, "d:p:l:L:", long_options, &long_index)) != -1) {
         switch(opt) {
             case 'd':
                 dir = optarg;
@@ -69,8 +71,8 @@ int main(int argc, char *argv[])
             case 'p':
                 port = atoi(optarg);
                 break;
-                log_file = optarg;
             case 'l':
+                log_file = optarg;
                 break;
             case 'L':
                 if (strcasecmp(optarg,"DEBUG") == 0)
@@ -90,6 +92,8 @@ int main(int argc, char *argv[])
     LogInit(log_file, log_level);
 
     VideoMatch::VideoDB video_db(dir);
+    video_db.Load();
+
     boost::asio::io_service io_service;
     VideoMatch::RequestProcessor::SetVideoDB(&video_db);
     http_server::HttpServer http_server(io_service, port, &my_handler);

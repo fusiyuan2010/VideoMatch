@@ -77,16 +77,18 @@ int VideoDB::Load()
 {
     char fn[255];
     int fd;
-    char *s;
+    char *s, *sbase;
     off_t fsize;
     int db_size, kb_num;
     
     snprintf(fn, 255, "%s/videomatch_db.bin", db_path_.c_str());
     fd = open(fn, O_RDONLY);
-    if (fd < 0) 
+    if (fd < 0) {
+        LOG_INFO("No db file found: %s", fn);
         goto READLOG;
+    }
     fsize = lseek(fd, 0, SEEK_END);
-    s = (char*)mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    s = sbase = (char*)mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
     db_size = *(int*)s; s += sizeof(int);
     kb_num = *(int*)s; s += sizeof(int);
     for(int i = 0; i < db_size; i++) {
@@ -122,15 +124,17 @@ int VideoDB::Load()
         table_.insert(make_pair(kbhash, kb));
     }
     
-    munmap(s, fsize);
+    munmap(sbase, fsize);
     close(fd);
     LOG_INFO("Load from db file done");
 
 READLOG:
     snprintf(fn, 255, "%s/videomatch_log.bin", db_path_.c_str());
     fd = open(fn, O_RDONLY);
-    if (fd < 0)
+    if (fd < 0) {
+        LOG_INFO("No log file found: %s", fn);
         goto RET;
+    }
     fsize = lseek(fd, 0, SEEK_END);
     s = (char*)mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
 
@@ -150,7 +154,7 @@ int VideoDB::Save()
     char fn[255], fn2[255];
     snprintf(fn, 255, "%s/tmp_videomatch_db.bin", db_path_.c_str());
     snprintf(fn2, 255, "%s/videomatch_db.bin", db_path_.c_str());
-    int fd = open(fn, O_WRONLY);
+    int fd = open(fn, O_WRONLY | O_CREAT, 0644);
     if (fd < 0) {
         LOG_ERROR("Save DB, %s open failed, [%s]",
                 fn, strerror(errno));
@@ -179,7 +183,7 @@ int VideoDB::Save()
         check_flush(sizeof(int) + d.first.size() + 1
                 + sizeof(int) + d.second->frames_.size() * sizeof(uint64_t));
         *(int *)s = (int)(d.first.size()); s += sizeof(int);
-        memcpy(s, d.first.c_str(), d.first.size());
+        memcpy(s, d.first.c_str(), d.first.size()); s += d.first.size();
         *s++ = '\0';
         *(int *)s = (int)(d.second->frames_.size()); s += sizeof(int);
         for(const uint64_t f : d.second->frames_) {
@@ -199,7 +203,7 @@ int VideoDB::Save()
                     i.second->name_.size() + 1);
             *(uint64_t*)s = i.first; s += sizeof(uint64_t);
             *(int *)s = (int)(i.second->name_.size()); s += sizeof(int);
-            memcpy(s, i.second->name_.c_str(), i.second->name_.size());
+            memcpy(s, i.second->name_.c_str(), i.second->name_.size()); s += i.second->name_.size();
             *s++ = '\0';
         }
     }

@@ -35,7 +35,7 @@ void RequestProcessor::Process(const std::string& request, std::string& reply)
 {
     //Parse request , Json
     Json::Reader reader;
-    Json::FastWriter writer;
+    Json::StyledWriter writer;
     Json::Value v;
     Json::Value rv;
 
@@ -104,6 +104,10 @@ void RequestProcessor::Process(const std::string& request, std::string& reply)
     return;
 }
 
+void RequestProcessor::SaveDB()
+{
+    vdb_->Save();
+}
 
 }
 

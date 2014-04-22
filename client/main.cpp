@@ -3,56 +3,53 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
+#include <getopt.h>
+#include <vector>
+
+using namespace std;
 
 static void print_usage(const char *sexec)
 {
     printf("Usage: %s [opts]\n"
-           "\t-p --port <port_number> [default 8964]        the server port\n"
-           "\t-d --dir <path> [default ./]                  the db file load/save directory\n"
-           "\t-l --log-file <filename> [default time.txt]   the log file name\n"
-           "\t-L --log-level <level> [default info]         the log level, one in [debug|info|error]\n"
-          );
+           "\t-r --req [add|query] [required]                 type of request\n"
+           "\t-a --addr <url> [required]                      the server address\n"
+           "\t-n --name <string> [required when add]          name(key) of the video to add\n"
+           "\t-d --dir <path> [required]                      directory that frames stored\n"
+          , sexec);
 }
-
-
 
 int main(int argc, char *argv[])
 {
 
-    const char *dir = "./";
-    int port = 8964;
-    char default_log_file[255];
-    char *log_file = default_log_file;
-    LOG_LEVEL log_level = LINFO;
+    const char *dir = nullptr;
+    const char *name = nullptr;
+    const char *url = nullptr;
+    const char *req = nullptr;
 
-    snprintf(default_log_file, 255, "./%ld.log", time(NULL));
     static struct option long_options[] = {
+        {"req",     required_argument, 0,  'r' },
+        {"addr",     required_argument, 0,  'a' },
+        {"name",     required_argument, 0,  'n' },
         {"dir",     required_argument, 0,  'd' },
-        {"port",     required_argument, 0,  'p' },
-        {"log-file",     required_argument, 0,  'l' },
-        {"log-level",     required_argument, 0,  'L' },
+        { 0, 0, 0, 0}
     };
 
     int long_index = 0;
     int opt;
-    while((opt = getopt_long(argc, argv, "", long_options, &long_index)) != -1) {
+    while((opt = getopt_long(argc, argv, "r:a:n:d:", long_options, &long_index)) != -1) {
         switch(opt) {
             case 'd':
                 dir = optarg;
                 break;
-            case 'p':
-                port = atoi(optarg);
+            case 'r':
+                req = optarg;
                 break;
-                log_file = optarg;
-            case 'l':
+            case 'a':
+                url = optarg;
                 break;
-            case 'L':
-                if (strcasecmp(optarg,"DEBUG") == 0)
-                    log_level = LDEBUG;
-                else if (strcasecmp(optarg,"INFO") == 0)
-                    log_level = LINFO;
-                else if (strcasecmp(optarg,"ERROR") == 0)
-                    log_level = LERROR;
+            case 'n':
+                name = optarg;
                 break;
             default:
                 print_usage(argv[0]);
@@ -61,30 +58,60 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (req == nullptr) {
+        print_usage(argv[0]);
+        return 1;
+    }
 
-  CURL *curl;
-  CURLcode res;
+    if (url == nullptr || dir == nullptr) {
+        print_usage(argv[0]);
+        return 1;
+    }
 
-  static const char *postthis="moo mooo moo moo";
+    if (strcasecmp(req, "add") == 0 && name == nullptr) {
+        print_usage(argv[0]);
+        return 1;
+    }
 
-  curl = curl_easy_init();
-  if(curl) {
-    curl_easy_setopt(curl, CURLOPT_URL, "http://example.com");
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postthis);
+    VideoMatch::Requester requester;
+    requester.InitUrl(url);
 
-    /* if we don't provide POSTFIELDSIZE, libcurl will strlen() by
-       itself */
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(postthis));
+    vector<uint64_t> frames;
+    struct dirent **filelist;
+    int fnum = scandir(dir, &filelist, 0, alphasort);
+    for(int i = 0; i < fnum; i++) {
+        char filename[128];
+        uint64_t hresult;
+        int ret;
 
-    /* Perform the request, res will get the return code */
-    res = curl_easy_perform(curl);
-    /* Check for errors */
-    if(res != CURLE_OK)
-      fprintf(stderr, "curl_easy_perform() failed: %s\n",
-              curl_easy_strerror(res));
+        const char *sfx = filelist[i]->d_name + strlen(filelist[i]->d_name) - 4;
+        if (strcmp(sfx, ".jpg"))
+            continue;
+        snprintf(filename, 128, "%s/%s", dir, filelist[i]->d_name);
 
-    /* always cleanup */
-    curl_easy_cleanup(curl);
-  }
-  return 0;
+        ret = VideoMatch::GetHashCode(filename, hresult);
+        if (ret < 0) 
+            fprintf(stderr, "Analyze image %s failed\n", filename);
+        else
+            frames.push_back(hresult);
+
+        fprintf(stderr, "\r%d / %d\t\t\t\t\t", i, fnum);
+        free(filelist[i]);
+    }
+    printf("\n");
+    free(filelist);
+
+
+    printf("Requesting...");
+    string reply;
+    if (strcasecmp(req, "add") == 0)
+        requester.Add(name, frames, reply);
+    if (strcasecmp(req, "query") == 0)
+        requester.Query(frames, reply);
+    printf("done\n");
+
+    printf("%s\n", reply.c_str());
+
+    return 0;
 }
+

@@ -165,8 +165,8 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
        0 - 63 diff bits;
        
     */
-    vector<uint8_t> bmark(bf.size(), 255); 
-    vector<uint8_t> cmark(cf.size(), 255); 
+    vector<uint8_t> bmark(bf.size(), (uint8_t)255); 
+    vector<uint8_t> cmark(cf.size(), (uint8_t)255); 
     
     for(size_t i = 0; i < bf.size(); i++) 
         base_frames.insert(make_pair(bf[i], (int)i));
@@ -176,7 +176,7 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
     auto check_range = [&](int cpos, int bpos) {
         /* when found a CMF or MDF, 
            check ahead and backward to see how much frames matched around here */
-        for(size_t j = 1; cpos + j < cf.size() && bpos + j < bf.size(); j++) {
+        for(int j = 1; cpos + j < (int)cf.size() && bpos + j < (int)bf.size(); j++) {
             int d = diff_bits(cf[cpos + j], bf[bpos + j]);
             if (d > STOP_CHECK_BITS)
                 break;
@@ -186,7 +186,7 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
                 bmark[bpos + j] = d;
         }
 
-        for(size_t j = 1; cpos - j >= 0 && bpos - j >= 0; j++) {
+        for(int j = 1; cpos - j >= 0 && bpos - j >= 0; j++) {
             int d = diff_bits(cf[cpos - j], bf[bpos - j]);
             if (d > STOP_CHECK_BITS)
                 break;
@@ -222,10 +222,10 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
         skipped = 0;
 
         int mdf_pos = 0;  
-        cmark[i] = min_diff_bits(cf[i], bf, 0, bf.size(), mdf_pos);
-        bmark[mdf_pos] = cmark[i];
-        if (cmark[i] > CHECK_BITS) 
+        int diff =  min_diff_bits(cf[i], bf, 0, bf.size(), mdf_pos);
+        if (diff > CHECK_BITS)
             continue;
+        cmark[i] = bmark[mdf_pos] = diff;
         check_range(i, mdf_pos);
     }
 
@@ -234,23 +234,22 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
     double score1, score2;
     /* the begining and the end of video does not count */
     for(size_t i = cf.size() * 1.5 / 10 ; i < cf.size() * 8.5 / 10; i++) {
-        if (cf[i] != 255) {
-            total_diff_bits += cf[i];
+        if (cmark[i] != 255) {
+            total_diff_bits += cmark[i];
             cnt++;
         }
     }
-    score1 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) + (cnt / (cf.size() * 0.7 + 1));
-    score1 /= 2;
+
+    score1 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (cf.size() * 0.7 + 1));
 
     total_diff_bits = 0; cnt = 0;
     for(size_t i = bf.size() * 1.5 / 10 ; i < bf.size() * 8.5 / 10; i++) {
-        if (bf[i] != 255) {
-            total_diff_bits += bf[i];
+        if (bmark[i] != 255) {
+            total_diff_bits += bmark[i];
             cnt++;
         }
     }
-    score2 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) + (cnt / (bf.size() * 0.7 + 1));
-    score2 /= 2;
+    score2 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (bf.size() * 0.7 + 1));
 
     LOG_DEBUG("Time consumed %ld us, score1 : %f, score2: %f", tc.GetTimeMicroS(), score1, score2);
     return (score1 + score2) / 2;
@@ -458,7 +457,7 @@ int VideoDB::Query(const string& video_name, DataItem& data_item) const
 
 int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& result) const
 {
-    static const double threshold = 0;
+    static const double threshold = 0.45;
     vector<DataItem *> candidates;
     int cand_num = get_candidates1(data_item.frames_, candidates);
     LOG_DEBUG("level1 candidate num: %d", cand_num);
@@ -469,6 +468,10 @@ int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& resu
             result.push_back(make_pair(i->name_, score));
         i->dec_ref();
     }
+    sort(result.begin(), result.end(), 
+            [](const pair<string, double>& p1, const pair<string, double>& p2) {
+                return p1.second > p2.second;
+            });
     return (int)result.size();
 }
 

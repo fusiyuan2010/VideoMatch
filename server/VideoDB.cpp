@@ -56,8 +56,19 @@ int VideoDB::get_candidates1(const std::vector<uint64_t>& frames, std::vector<Da
     return (int)result.size();
 }
 
+/* 
+   Check candidate algorithm:
+   
+
+
+
+
+*/
+
 double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2) const
 {
+    data_item1->dec_ref();
+    
     return 0;
 }
 
@@ -80,6 +91,7 @@ int VideoDB::Load()
     char *s, *sbase;
     off_t fsize;
     int db_size, kb_num;
+    std::lock_guard<std::mutex> lock(mutex_);
     
     snprintf(fn, 255, "%s/videomatch_db.bin", db_path_.c_str());
     fd = open(fn, O_RDONLY);
@@ -174,6 +186,8 @@ int VideoDB::Save()
         }
     };
 
+    std::lock_guard<std::mutex> lock(mutex_);
+
     *(int *)s = (int)(db_.size()); s += sizeof(int);
     *(int *)s = (int)(table_.size()); s += sizeof(int);
 
@@ -181,12 +195,13 @@ int VideoDB::Save()
     for(const auto &d : db_) {
         d.second->inc_ref();
         check_flush(sizeof(int) + d.first.size() + 1
-                + sizeof(int) + d.second->frames_.size() * sizeof(uint64_t));
+                + sizeof(int));
         *(int *)s = (int)(d.first.size()); s += sizeof(int);
         memcpy(s, d.first.c_str(), d.first.size()); s += d.first.size();
         *s++ = '\0';
         *(int *)s = (int)(d.second->frames_.size()); s += sizeof(int);
         for(const uint64_t f : d.second->frames_) {
+            check_flush(sizeof(uint64_t));
             *(uint64_t*)s = f; s += sizeof(uint64_t);
         }
         d.second->dec_ref();

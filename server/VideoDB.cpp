@@ -7,18 +7,68 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <pthread.h>
 
+using namespace std;
+
+
+class TimeCounter
+{
+public:
+    TimeCounter() {reset();}
+    ~TimeCounter() {}
+    void reset() { gettimeofday(&_start, NULL); }
+    long GetTimeMilliS() {return get_interval()/1000;}
+    long GetTimeMicroS() {return get_interval();}
+    long GetTimeS() {return get_interval()/1000000;}
+private:
+    long get_interval()
+    {
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        return (long)(now.tv_sec - _start.tv_sec)*1000000
+            + now.tv_usec - _start.tv_usec;
+    }
+    struct timeval _start;
+};
 
 
 namespace VideoMatch
 {
 
+static int bit1_table[256];
+static pthread_once_t bit1_table_inited = PTHREAD_ONCE_INIT;
 
-VideoDB::VideoDB(const std::string& db_path)
+static void make_bit1_table(void)
+{
+    for(unsigned int i = 0; i < 255; i++) {
+        int count = 0;
+        unsigned int k = i;
+        for(int j = 0; j < 8; j++) {
+            if (k & 0x1) 
+                count++;
+            k >>= 1;
+        }
+        bit1_table[i] = count;
+    }
+}
+
+static inline int bit1count(uint64_t i) 
+{
+    unsigned char *c = (unsigned char *)&i;
+    int ret = 0;
+    for(int i = 0; i < 8; i++) 
+        ret += bit1_table[c[i]];
+    return ret;
+}
+
+VideoDB::VideoDB(const string& db_path)
     : db_path_(db_path)
 {
+    (void) pthread_once(&bit1_table_inited, make_bit1_table);
 }
 
 
@@ -26,9 +76,9 @@ VideoDB::~VideoDB()
 {
 }
 
-int VideoDB::get_candidates1(const std::vector<uint64_t>& frames, std::vector<DataItem*>& result) const
+int VideoDB::get_candidates1(const vector<uint64_t>& frames, vector<DataItem*>& result) const
 {
-    //std::lock_guard<std::mutex> lock(mutex_);
+    //lock_guard<mutex> lock(mutex_);
     mutex_.lock();
 
     for(const auto k : frames) {
@@ -50,26 +100,160 @@ int VideoDB::get_candidates1(const std::vector<uint64_t>& frames, std::vector<Da
     mutex_.unlock();
 
     /* merge the result  */
-    std::sort(result.begin(), result.end());
-    auto it = std::unique(result.begin(), result.end());
-    result.resize(std::distance(result.begin(), it));
+    sort(result.begin(), result.end());
+    auto it = unique(result.begin(), result.end());
+    result.resize(distance(result.begin(), it));
     return (int)result.size();
 }
 
 /* 
    Check candidate algorithm:
-   
 
+   CMF denotes Completely Match Frame, means the frames that have the same hash value.
+   MDF denotes Minimum Difference Frame, 
+   means the corresponding frame that has the min xor1 bits in the other item.
 
+    1. Check CMF index ranges, 
+       measure its coverage among the whole range of base item and comparing item.
+
+    2. (Or maybe only if 1's result not good enough) Check MDF,
+       measure average min diff bits count (check only some samples, like 50 at most),
+       and the order of MDF in the other video.
 
 
 */
+/* find MDF from a range of frames in base */
+static inline int diff_bits(uint64_t key1, uint64_t key2)
+{
+    return bit1count(key1 ^ key2);
+}
 
+static int min_diff_bits(uint64_t key, const vector<uint64_t>& base, int start, int end, int& pos)
+{
+    int md = 64;
+    for(int i = start; i < end; i++) {
+        uint64_t diff = key ^ base[i];
+        int d = bit1count(diff);
+        if (d < md) {
+            md = d;
+            pos = i;
+        }
+    }
+    return md;
+}
+
+/* not interchangeable, the result depends on the arguments' order,
+   but it does not matters much */
 double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2) const
 {
-    data_item1->dec_ref();
+    /* if no CMF found, decide how many frames to skip to check MDF, 
+       since finding MDF is O(n), it's not good to check every frame for MDF */
+    static const int SKIP_SPLIT_PARTS = 32;
+    static const int CHECK_BITS = 8;
+    static const int STOP_CHECK_BITS = 16;
+    static const int GOOD_BITS = 4;
+
+    unordered_multimap<uint64_t, int> base_frames;
+    const auto& cf = data_item2.frames_;
+    const auto& bf = data_item1->frames_;
+
+    LOG_DEBUG("Comparing Current vs %s", data_item1->name_.c_str());
+    TimeCounter tc;
+
+    /* state of each frame :
+       255 - no match
+       0 - 63 diff bits;
+       
+    */
+    vector<uint8_t> bmark(bf.size(), 255); 
+    vector<uint8_t> cmark(cf.size(), 255); 
     
-    return 0;
+    for(size_t i = 0; i < bf.size(); i++) 
+        base_frames.insert(make_pair(bf[i], (int)i));
+
+
+    int skip_itvl = cf.size() / SKIP_SPLIT_PARTS; // 0 also works
+    auto check_range = [&](int cpos, int bpos) {
+        /* when found a CMF or MDF, 
+           check ahead and backward to see how much frames matched around here */
+        for(size_t j = 1; cpos + j < cf.size() && bpos + j < bf.size(); j++) {
+            int d = diff_bits(cf[cpos + j], bf[bpos + j]);
+            if (d > STOP_CHECK_BITS)
+                break;
+            if (d < cmark[cpos + j])
+                cmark[cpos + j] = d;
+            if (d < bmark[bpos + j])
+                bmark[bpos + j] = d;
+        }
+
+        for(size_t j = 1; cpos - j >= 0 && bpos - j >= 0; j++) {
+            int d = diff_bits(cf[cpos - j], bf[bpos - j]);
+            if (d > STOP_CHECK_BITS)
+                break;
+            if (d < cmark[cpos - j])
+                cmark[cpos - j] = d;
+            if (d < bmark[bpos - j])
+                bmark[bpos - j] = d;
+        }
+    };
+
+    int skipped = 0;
+    for(size_t i = 0; i < cf.size(); i++) {
+        if (cmark[i] < GOOD_BITS)
+            continue;
+
+        if (base_frames.count(cf[i]) > 0) {
+            /* CMF found */
+            cmark[i] = 0;
+            auto range = base_frames.equal_range(cf[i]);
+            for(auto it = range.first; it != range.second; it++) {
+                if (bmark[i] < GOOD_BITS) {
+                    bmark[it->second] = 0;
+                    continue;
+                }
+                bmark[it->second] = 0;
+                check_range(i, it->second);
+            }
+            continue;
+        }
+
+        if (++skipped < skip_itvl) 
+            continue;
+        skipped = 0;
+
+        int mdf_pos = 0;  
+        cmark[i] = min_diff_bits(cf[i], bf, 0, bf.size(), mdf_pos);
+        bmark[mdf_pos] = cmark[i];
+        if (cmark[i] > CHECK_BITS) 
+            continue;
+        check_range(i, mdf_pos);
+    }
+
+    /* get score from overlapped frames, based on their ranges and avg diff bits */
+    int total_diff_bits = 0, cnt = 0;
+    double score1, score2;
+    /* the begining and the end of video does not count */
+    for(size_t i = cf.size() * 1.5 / 10 ; i < cf.size() * 8.5 / 10; i++) {
+        if (cf[i] != 255) {
+            total_diff_bits += cf[i];
+            cnt++;
+        }
+    }
+    score1 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) + (cnt / (cf.size() * 0.7 + 1));
+    score1 /= 2;
+
+    total_diff_bits = 0; cnt = 0;
+    for(size_t i = bf.size() * 1.5 / 10 ; i < bf.size() * 8.5 / 10; i++) {
+        if (bf[i] != 255) {
+            total_diff_bits += bf[i];
+            cnt++;
+        }
+    }
+    score2 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) + (cnt / (bf.size() * 0.7 + 1));
+    score2 /= 2;
+
+    LOG_DEBUG("Time consumed %ld us, score1 : %f, score2: %f", tc.GetTimeMicroS(), score1, score2);
+    return (score1 + score2) / 2;
 }
 
 /* File format:
@@ -91,7 +275,7 @@ int VideoDB::Load()
     char *s, *sbase;
     off_t fsize;
     int db_size, kb_num;
-    std::lock_guard<std::mutex> lock(mutex_);
+    lock_guard<mutex> lock(mutex_);
     
     snprintf(fn, 255, "%s/videomatch_db.bin", db_path_.c_str());
     fd = open(fn, O_RDONLY);
@@ -106,7 +290,7 @@ int VideoDB::Load()
     for(int i = 0; i < db_size; i++) {
         /* video name */
         int vnlen = *(int*)s; s += sizeof(int);
-        std::string vn(s);  s += vnlen + 1;
+        string vn(s);  s += vnlen + 1;
         /* create video object and read frame hashes */
         DataItem *di = new DataItem(vn);
         int fc = *(int*)s; s += sizeof(int);
@@ -124,14 +308,14 @@ int VideoDB::Load()
         for(int j = 0; j < kb_size; j++) {
             uint64_t hash = *(uint64_t*)s; s += sizeof(uint64_t);
             int vnlen = *(int*)s; s += sizeof(int);
-            std::string vn(s);  s += vnlen + 1;
+            string vn(s);  s += vnlen + 1;
             auto it = db_.find(vn);
             if (it == db_.end()) {
                 LOG_ERROR("Load DB error, no video named [ %s ] found", vn.c_str());
                 continue;
             }
             DataItem *di = it->second;
-            kb->push_back(std::make_pair(hash, di));
+            kb->push_back(make_pair(hash, di));
         }
         table_.insert(make_pair(kbhash, kb));
     }
@@ -186,7 +370,7 @@ int VideoDB::Save()
         }
     };
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    lock_guard<mutex> lock(mutex_);
 
     *(int *)s = (int)(db_.size()); s += sizeof(int);
     *(int *)s = (int)(table_.size()); s += sizeof(int);
@@ -236,7 +420,7 @@ int VideoDB::Save()
 
 int VideoDB::Add(const DataItem& data_item)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    lock_guard<mutex> lock(mutex_);
     auto it = db_.find(data_item.name_);
     if (it != db_.end()) {
         LOG_INFO("Video %s exists", data_item.name_.c_str());
@@ -244,27 +428,27 @@ int VideoDB::Add(const DataItem& data_item)
     }
 
     DataItem *di = new DataItem(data_item);
-    db_.insert(std::make_pair(di->name_, di));
+    db_.insert(make_pair(di->name_, di));
     for(const auto &k : di->frames_) {
         KeyBlock *kb;
         uint32_t k2 = key_shorten(k);
         auto it = table_.find(k2);
         if (it == table_.end()) {
             kb = new KeyBlock;
-            table_.insert(std::make_pair(k2, kb));
+            table_.insert(make_pair(k2, kb));
         } else
             kb = it->second;
         
-        kb->push_back(std::make_pair(k, di));
+        kb->push_back(make_pair(k, di));
     }
     LOG_INFO("Video %s added, %d frames, KeyBlock size: %d",
             data_item.name_.c_str(), data_item.frames_.size(), table_.size());
     return 0;
 }
 
-int VideoDB::Query(const std::string& video_name, DataItem& data_item) const
+int VideoDB::Query(const string& video_name, DataItem& data_item) const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    lock_guard<mutex> lock(mutex_);
     auto it = db_.find(video_name);
     if (it == db_.end())
         return -1;
@@ -272,25 +456,25 @@ int VideoDB::Query(const std::string& video_name, DataItem& data_item) const
     return 0;
 }
 
-int VideoDB::Query(const DataItem& data_item, std::vector<std::pair<std::string, double>>& result) const
+int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& result) const
 {
     static const double threshold = 0;
-    std::vector<DataItem *> candidates;
+    vector<DataItem *> candidates;
     int cand_num = get_candidates1(data_item.frames_, candidates);
     LOG_DEBUG("level1 candidate num: %d", cand_num);
     for(auto i : candidates) {
         double score = check_candidate(i, data_item);
         LOG_DEBUG("Checked candidate %s, score %f", i->name_.c_str(), score);
         if (score > threshold)
-            result.push_back(std::make_pair(i->name_, score));
+            result.push_back(make_pair(i->name_, score));
         i->dec_ref();
     }
     return (int)result.size();
 }
 
-int VideoDB::Remove(const std::string& video_name)
+int VideoDB::Remove(const string& video_name)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    lock_guard<mutex> lock(mutex_);
     /*
     auto it = db_.find(video_name);
     if (it == db_.end())

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-#OPT=-O2
+OPT=-O3
 DEBUG=-g
 
 CFLAGS=-std=c++11 -Wall -Wno-format -fPIC $(OPT) $(DEBUG) -DNG #-DAP #-DNG #-DREUTERS

@@ -252,7 +252,7 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
     score2 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (bf.size() * 0.7 + 1));
 
     LOG_DEBUG("Time consumed %ld us, score1 : %f, score2: %f", tc.GetTimeMicroS(), score1, score2);
-    return (score1 + score2) / 2;
+    return score1 * score2;
 }
 
 /* File format:
@@ -457,8 +457,10 @@ int VideoDB::Query(const string& video_name, DataItem& data_item) const
 
 int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& result) const
 {
-    static const double threshold = 0.45;
+    static const double threshold = 0.09;
     vector<DataItem *> candidates;
+    TimeCounter tc;
+
     int cand_num = get_candidates1(data_item.frames_, candidates);
     LOG_DEBUG("level1 candidate num: %d", cand_num);
     for(auto i : candidates) {
@@ -472,6 +474,7 @@ int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& resu
             [](const pair<string, double>& p1, const pair<string, double>& p2) {
                 return p1.second > p2.second;
             });
+    LOG_DEBUG("Query time: %ld ms(%d cand, %d result)", tc.GetTimeMilliS(), cand_num, (int)result.size());
     return (int)result.size();
 }
 

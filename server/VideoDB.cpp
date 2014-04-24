@@ -41,6 +41,7 @@ namespace VideoMatch
 
 static int bit1_table[256];
 static pthread_once_t bit1_table_inited = PTHREAD_ONCE_INIT;
+static const uint64_t EMPTY_FRAME = 0;
 
 static void make_bit1_table(void)
 {
@@ -82,6 +83,8 @@ int VideoDB::get_candidates1(const vector<uint64_t>& frames, vector<DataItem*>& 
     mutex_.lock();
 
     for(const auto k : frames) {
+        if (k == EMPTY_FRAME)
+            continue;
         uint32_t k2 = key_shorten(k);
         auto it = table_.find(k2);
         if (it == table_.end())
@@ -230,26 +233,27 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
     }
 
     /* get score from overlapped frames, based on their ranges and avg diff bits */
+    /* CUT_RATIO means the begining and the end of video does not count */
+    static const double CUT_RATIO = 0.00;
     int total_diff_bits = 0, cnt = 0;
     double score1, score2;
-    /* the begining and the end of video does not count */
-    for(size_t i = cf.size() * 1.5 / 10 ; i < cf.size() * 8.5 / 10; i++) {
+    for(size_t i = cf.size() * CUT_RATIO * 100 / 100 ; i < cf.size() * (1 - CUT_RATIO) * 100 / 100; i++) {
         if (cmark[i] != 255) {
             total_diff_bits += cmark[i];
             cnt++;
         }
     }
 
-    score1 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (cf.size() * 0.7 + 1));
+    score1 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (cf.size() * (1 - 2 * CUT_RATIO) + 1));
 
     total_diff_bits = 0; cnt = 0;
-    for(size_t i = bf.size() * 1.5 / 10 ; i < bf.size() * 8.5 / 10; i++) {
+    for(size_t i = bf.size() * CUT_RATIO * 100 / 100 ; i < bf.size() * (1 - CUT_RATIO) * 100 / 100; i++) {
         if (bmark[i] != 255) {
             total_diff_bits += bmark[i];
             cnt++;
         }
     }
-    score2 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (bf.size() * 0.7 + 1));
+    score2 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (bf.size() * (1 - 2 * CUT_RATIO) + 1));
 
     LOG_DEBUG("Time consumed %ld us, score1 : %f, score2: %f", tc.GetTimeMicroS(), score1, score2);
     return score1 * score2;
@@ -429,6 +433,8 @@ int VideoDB::Add(const DataItem& data_item)
     DataItem *di = new DataItem(data_item);
     db_.insert(make_pair(di->name_, di));
     for(const auto &k : di->frames_) {
+        if (k == EMPTY_FRAME)
+            continue;
         KeyBlock *kb;
         uint32_t k2 = key_shorten(k);
         auto it = table_.find(k2);

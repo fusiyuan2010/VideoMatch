@@ -77,6 +77,7 @@ int Requester::Query(const vector<uint64_t>& frames, string& reply)
     }
     string req_str = writer.write(v);
  
+    printf("Req:\n%s\n", req_str.c_str());
     reply = "";
     curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, req_str.c_str());
     curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, &reply);

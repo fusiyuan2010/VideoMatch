@@ -1,5 +1,9 @@
 
+#ifdef IMAGETEST 
+#include <stdint.h>
+#else
 #include <ImageProcessor.hpp>
+#endif
 
 
 #define cimg_use_jpeg
@@ -25,7 +29,7 @@ static CImg<float>* ph_dct_matrix(const int N)
 static int crop_border(CImg<float>& img)
 {
     static const float SD_DIFF_THRESHOLD = 10.0;
-    static const float AVG_DIFF_THRESHOLD = 15.0;
+    static const float AVG_DIFF_THRESHOLD = 255.0;
     int x1, x2, y1, y2;
     float last_avg = 0;
 
@@ -224,3 +228,31 @@ int GetHashCode(const char *filename, uint64_t& result)
 
 }
 
+#ifdef IMAGETEST 
+#include <dirent.h>
+
+using namespace VideoMatch;
+
+int main(int argc, char *argv[])
+{
+    struct dirent **filelist;
+    int fnum = scandir(argv[1], &filelist, 0, alphasort);
+    for(int i = 0; i < fnum; i++) {
+        char filename[128];
+        uint64_t hresult;
+        int ret;
+
+        const char *sfx = filelist[i]->d_name + strlen(filelist[i]->d_name) - 4;
+        if (strcmp(sfx, ".jpg"))
+            continue;
+        snprintf(filename, 128, "%s/%s", argv[1], filelist[i]->d_name);
+        ret = GetHashCode(filename, hresult);
+        printf("%d %llx\n", atoi(filelist[i]->d_name), hresult);
+        free(filelist[i]);
+    }
+    //free(filelist);
+ 
+    return 0;
+}
+
+#endif

@@ -210,7 +210,7 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
             cmark[i] = 0;
             auto range = base_frames.equal_range(cf[i]);
             for(auto it = range.first; it != range.second; it++) {
-                if (bmark[i] < GOOD_BITS) {
+                if (bmark[it->second] < GOOD_BITS) {
                     bmark[it->second] = 0;
                     continue;
                 }

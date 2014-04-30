@@ -1,4 +1,5 @@
 #include <RequestProcessor.hpp>
+#include <TimeCounter.hpp>
 #include <VideoDB.hpp>
 
 #include <json/json.h>
@@ -108,6 +109,43 @@ void RequestProcessor::SaveDB()
 {
     vdb_->Save();
 }
+
+void RequestProcessor::Info(std::string& reply)
+{
+    Json::StyledWriter writer;
+    Json::Value rv;
+
+    rv["video_count"] = (Json::Value::Int)(vdb_->Count());
+    rv["frames_count"] = (Json::Value::Int)(vdb_->FramesCount());
+    rv["frame_table_size"] = (Json::Value::Int)(vdb_->FrameTableSize());
+    reply = writer.write(rv);
+}
+
+void RequestProcessor::Query(const std::string& key, std::string& reply)
+{
+    Json::StyledWriter writer;
+    Json::Value rv;
+    DataItem data_item(""); // name not required
+    std::vector<std::pair<std::string, double>> result;
+
+    TimeCounter tc;
+
+    if (vdb_->Query(key, data_item) < 0) {
+        rv["code"] = (Json::Value::Int)(-1);
+        rv["msg"] = "Key not found";
+    } else {
+        rv["code"] = vdb_->Query(data_item, result);
+        for(size_t i = 0; i < result.size(); i++) {
+            Json::Value item;
+            item["name"] = result[i].first;
+            item["score"] = result[i].second;
+            rv["result"][(int)i] = item;
+        }
+        rv["time_ms"] = (Json::Value::Int)tc.GetTimeMilliS();
+    }
+    reply = writer.write(rv);
+}
+
 
 }
 

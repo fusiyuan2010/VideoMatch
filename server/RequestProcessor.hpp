@@ -15,6 +15,8 @@ class RequestProcessor
 public:
     static void SetVideoDB(VideoDB *vdb);
     static void Process(const std::string& request, std::string& reply);
+    static void Info(std::string& reply);
+    static void Query(const std::string& key, std::string& reply);
     static void SaveDB();
 };
 

@@ -85,7 +85,8 @@ class VideoDB
     double check_candidate(DataItem *data_item1, const DataItem& data_item2) const;
     uint32_t key_shorten(uint64_t raw) const
     {
-        return (raw >> 32);
+        /* 2 Million (21bits) slots*/
+        return (raw >> (64 - 21));
     }
 
 public:
@@ -99,6 +100,10 @@ public:
     int Query(const std::string& video_name, DataItem& data_item) const ;
     int Query(const DataItem& data_item, std::vector<std::pair<std::string, double>>& result) const;
     int Remove(const std::string& video_name);
+
+    int Count() const;
+    int FramesCount() const;
+    int FrameTableSize() const;
 };
 
 

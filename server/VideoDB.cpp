@@ -1,4 +1,5 @@
 #include <VideoDB.hpp>
+#include <TimeCounter.hpp>
 #include <Log.hpp>
 #include <algorithm>
 #include <utility>
@@ -7,33 +8,11 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include <sys/time.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
 
 using namespace std;
-
-
-class TimeCounter
-{
-public:
-    TimeCounter() {reset();}
-    ~TimeCounter() {}
-    void reset() { gettimeofday(&_start, NULL); }
-    long GetTimeMilliS() {return get_interval()/1000;}
-    long GetTimeMicroS() {return get_interval();}
-    long GetTimeS() {return get_interval()/1000000;}
-private:
-    long get_interval()
-    {
-        struct timeval now;
-        gettimeofday(&now, NULL);
-        return (long)(now.tv_sec - _start.tv_sec)*1000000
-            + now.tv_usec - _start.tv_usec;
-    }
-    struct timeval _start;
-};
 
 
 namespace VideoMatch
@@ -42,6 +21,7 @@ namespace VideoMatch
 static int bit1_table[256];
 static pthread_once_t bit1_table_inited = PTHREAD_ONCE_INIT;
 static const uint64_t EMPTY_FRAME = 0;
+static const char *FILE_SIG = "VideoDBFileV1";
 
 static void make_bit1_table(void)
 {
@@ -278,16 +258,23 @@ int VideoDB::Load()
     char *s, *sbase;
     off_t fsize;
     int db_size, kb_num;
+    //bool new_ver_file = false;
+
     lock_guard<mutex> lock(mutex_);
-    
+
+    for(;;) { // avoid goto
     snprintf(fn, 255, "%s/videomatch_db.bin", db_path_.c_str());
     fd = open(fn, O_RDONLY);
     if (fd < 0) {
         LOG_INFO("No db file found: %s", fn);
-        goto READLOG;
+        break;
     }
     fsize = lseek(fd, 0, SEEK_END);
     s = sbase = (char*)mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (memcmp(s, FILE_SIG, strlen(FILE_SIG)) == 0) {
+        //new_ver_file = true;
+        s += strlen(FILE_SIG);
+    }
     db_size = *(int*)s; s += sizeof(int);
     kb_num = *(int*)s; s += sizeof(int);
     for(int i = 0; i < db_size; i++) {
@@ -304,10 +291,30 @@ int VideoDB::Load()
         db_.insert(make_pair(vn, di));
     }
 
+    KeyBlock *nkb = nullptr;
+    uint32_t last_kbhash = 0;
+
+    /* insert all frame-video pairs into table_, (assemble into keyblock, then insert into table_) */
+    auto insert_keyblock = [this, &last_kbhash, &nkb](uint64_t hash, DataItem *di, bool finish = false) {
+        uint32_t kbhash = key_shorten(hash);
+        if (kbhash != last_kbhash || finish) {
+            if (nkb != nullptr)
+                this->table_.insert(make_pair(last_kbhash, nkb));
+            nkb = new KeyBlock();
+        }
+        if (finish)
+            return;
+        nkb->push_back(make_pair(hash, di));
+        last_kbhash = kbhash;
+        return;
+    };
+    
     for(int i = 0; i < kb_num; i++) {
-        KeyBlock *kb = new KeyBlock();
-        uint32_t kbhash = *(uint32_t*)s; s += sizeof(uint32_t);
+        //KeyBlock *kb = new KeyBlock();
+        //uint32_t kbhash = *(uint32_t*)s; 
+        s += sizeof(uint32_t);
         int kb_size = *(int*)s; s += sizeof(int);
+        //kb->reserve(kb_size);
         for(int j = 0; j < kb_size; j++) {
             uint64_t hash = *(uint64_t*)s; s += sizeof(uint64_t);
             int vnlen = *(int*)s; s += sizeof(int);
@@ -318,21 +325,25 @@ int VideoDB::Load()
                 continue;
             }
             DataItem *di = it->second;
-            kb->push_back(make_pair(hash, di));
+            //kb->push_back(make_pair(hash, di));
+            insert_keyblock(hash, di);
         }
-        table_.insert(make_pair(kbhash, kb));
+        //table_.insert(make_pair(kbhash, kb));
     }
-    
+    insert_keyblock(0, nullptr, true);
+
     munmap(sbase, fsize);
     close(fd);
     LOG_INFO("Load from db file done");
+    break;
+    } //end for(;;)
 
-READLOG:
+    for(;;) {
     snprintf(fn, 255, "%s/videomatch_log.bin", db_path_.c_str());
     fd = open(fn, O_RDONLY);
     if (fd < 0) {
         LOG_INFO("No log file found: %s", fn);
-        goto RET;
+        break;
     }
     fsize = lseek(fd, 0, SEEK_END);
     s = (char*)mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -341,7 +352,9 @@ READLOG:
     close(fd);
 
     LOG_INFO("Load from log file done");
-RET:
+    break;
+    } // end for(;;)
+
     return 0;
 }
 
@@ -375,6 +388,7 @@ int VideoDB::Save()
 
     lock_guard<mutex> lock(mutex_);
 
+    strcpy(s, FILE_SIG); s += strlen(FILE_SIG);   
     *(int *)s = (int)(db_.size()); s += sizeof(int);
     *(int *)s = (int)(table_.size()); s += sizeof(int);
 
@@ -454,10 +468,14 @@ int VideoDB::Add(const DataItem& data_item)
 int VideoDB::Query(const string& video_name, DataItem& data_item) const
 {
     lock_guard<mutex> lock(mutex_);
+    LOG_DEBUG("looking for video %s", video_name.c_str());
     auto it = db_.find(video_name);
-    if (it == db_.end())
+    if (it == db_.end()) {
+        LOG_INFO("video %s not found", video_name.c_str());
         return -1;
+    }
     data_item = *(it->second);
+    LOG_DEBUG("found video %s, with %d frames", video_name.c_str(), (int)data_item.frames_.size());
     return 0;
 }
 
@@ -500,6 +518,24 @@ int VideoDB::Remove(const string& video_name)
     return 0;
 }
 
+int VideoDB::Count() const
+{
+    return db_.size();
+}
+
+int VideoDB::FramesCount() const
+{
+    lock_guard<mutex> lock(mutex_);
+    int result = 0;
+    for(const auto& i : db_) 
+        result += i.second->frames_.size();
+    return result;
+}
+
+int VideoDB::FrameTableSize() const
+{
+    return table_.size();
+}
 
 }
 

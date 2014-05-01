@@ -297,6 +297,7 @@ int VideoDB::Load()
     /* insert all frame-video pairs into table_, (assemble into keyblock, then insert into table_) */
     auto insert_keyblock = [this, &last_kbhash, &nkb](uint64_t hash, DataItem *di, bool finish = false) {
         uint32_t kbhash = key_shorten(hash);
+        /* 
         if (kbhash != last_kbhash || finish) {
             if (nkb != nullptr)
                 this->table_.insert(make_pair(last_kbhash, nkb));
@@ -306,6 +307,16 @@ int VideoDB::Load()
             return;
         nkb->push_back(make_pair(hash, di));
         last_kbhash = kbhash;
+        */
+        if (finish)
+            return;
+        auto it = this->table_.find(kbhash);
+        if (it == this->table_.end()) {
+            nkb = new KeyBlock();
+            this->table_.insert(make_pair(kbhash, nkb));
+        } else 
+            nkb = it->second;
+        nkb->push_back(make_pair(hash, di));
         return;
     };
     
@@ -527,8 +538,8 @@ int VideoDB::FramesCount() const
 {
     lock_guard<mutex> lock(mutex_);
     int result = 0;
-    for(const auto& i : db_) 
-        result += i.second->frames_.size();
+    for(const auto& i : table_) 
+        result += i.second->size();
     return result;
 }
 

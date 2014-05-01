@@ -16,16 +16,35 @@ static int my_handler(HttpConnPtr conn)
     using VideoMatch::RequestProcessor;
     std::string body;
     
+    auto prefixeq = [](const std::string& base, const std::string& match) {
+        if (base.size() > match.size()
+                && strncasecmp(base.c_str(), match.c_str(), match.size()) == 0)
+            return true;
+        return false;
+    };
+ 
     if (conn->req_type() == HTTP_GET) {
-        if (conn->path() == "/save") 
-            RequestProcessor::SaveDB();
-    } else if (conn->req_type() == HTTP_POST) {
-        if (conn->in_threadpool()) {
-            RequestProcessor::Process(conn->post_data(), body);
+        if (conn->path() == "/info") {
+            /* Show DB info, need not in thread pool */
+            RequestProcessor::Info(body);
         } else {
-            /* all requests about match engine should be processed in thread pool */
-            return HTTP_SWITCH_THREAD;
+            if (!conn->in_threadpool()) 
+                return HTTP_SWITCH_THREAD;
+
+            if (conn->path() == "/save") {
+                RequestProcessor::SaveDB();
+                body = "Done\n";
+            } else if (prefixeq(conn->path(), "/querykey/")) {
+                std::string key = conn->path().substr(strlen("/querykey/"));
+                RequestProcessor::Query(key, body);
+            }
         }
+    } else if (conn->req_type() == HTTP_POST) {
+        if (!conn->in_threadpool()) 
+            return HTTP_SWITCH_THREAD;
+
+            /* all requests about match engine should be processed in thread pool */
+        RequestProcessor::Process(conn->post_data(), body);
     }
 
     conn->set_body(body);

@@ -27,6 +27,8 @@ static int my_handler(HttpConnPtr conn)
         if (conn->path() == "/info") {
             /* Show DB info, need not in thread pool */
             RequestProcessor::Info(body);
+        } else if (conn->path() == "/exit") {
+            exit(0);
         } else {
             if (!conn->in_threadpool()) 
                 return HTTP_SWITCH_THREAD;

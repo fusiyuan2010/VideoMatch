@@ -89,6 +89,8 @@ class VideoDB
         return (raw >> (64 - 21));
     }
 
+    void add_frames_to_index(const DataItem *di);
+
 public:
     VideoDB(const std::string& db_path);
     ~VideoDB();

@@ -2,6 +2,7 @@
 #include <TimeCounter.hpp>
 #include <Log.hpp>
 #include <algorithm>
+#include <unordered_set>
 #include <utility>
 #include <cerrno>
 #include <cstdlib>
@@ -55,14 +56,20 @@ VideoDB::VideoDB(const string& db_path)
 
 VideoDB::~VideoDB() 
 {
+    //Force exit, no need to clean anything
 }
 
 int VideoDB::get_candidates1(const vector<uint64_t>& frames, vector<DataItem*>& result) const
 {
-    //lock_guard<mutex> lock(mutex_);
-    mutex_.lock();
+    unordered_set<uint64_t> unique_frames;
+    unordered_set<DataItem*> result_set;
 
-    for(const auto k : frames) {
+    /* query frames may contain some duplicates */
+    for(const auto k : frames) 
+        unique_frames.insert(k);
+
+    lock_guard<mutex> lock(mutex_);
+    for(const auto k : unique_frames) {
         if (k == EMPTY_FRAME)
             continue;
         uint32_t k2 = key_shorten(k);
@@ -74,18 +81,16 @@ int VideoDB::get_candidates1(const vector<uint64_t>& frames, vector<DataItem*>& 
         if (kb == nullptr)
             continue;
 
-        for(auto &i : *kb) 
-            if (i.first == k) {
-                result.push_back(i.second);
-                i.second->inc_ref();
-            }
+        for(auto &i : *kb) {
+            if (i.first == k) 
+                result_set.insert(i.second);
+        }
     }
-    mutex_.unlock();
 
-    /* merge the result  */
-    sort(result.begin(), result.end());
-    auto it = unique(result.begin(), result.end());
-    result.resize(distance(result.begin(), it));
+    for(auto i : result_set) {
+        i->inc_ref();
+        result.push_back(i);
+    }
     return (int)result.size();
 }
 
@@ -289,25 +294,21 @@ int VideoDB::Load()
             s += sizeof(uint64_t);
         }
         db_.insert(make_pair(vn, di));
+        /* newer version DB file do not store index, 
+         insteadly build index while loading */
+        add_frames_to_index(di);
     }
 
     KeyBlock *nkb = nullptr;
     uint32_t last_kbhash = 0;
 
     /* insert all frame-video pairs into table_, (assemble into keyblock, then insert into table_) */
-    auto insert_keyblock = [this, &last_kbhash, &nkb](uint64_t hash, DataItem *di, bool finish = false) {
+    auto insert_keyblock = [kb_num, this, &last_kbhash, &nkb](uint64_t hash, DataItem *di, bool finish = false) {
+        /* new version will not restore index while loading,
+         insteadly rebuild from raw data */
+        return;
+
         uint32_t kbhash = key_shorten(hash);
-        /* 
-        if (kbhash != last_kbhash || finish) {
-            if (nkb != nullptr)
-                this->table_.insert(make_pair(last_kbhash, nkb));
-            nkb = new KeyBlock();
-        }
-        if (finish)
-            return;
-        nkb->push_back(make_pair(hash, di));
-        last_kbhash = kbhash;
-        */
         if (finish)
             return;
         auto it = this->table_.find(kbhash);
@@ -336,16 +337,14 @@ int VideoDB::Load()
                 continue;
             }
             DataItem *di = it->second;
-            //kb->push_back(make_pair(hash, di));
             insert_keyblock(hash, di);
         }
-        //table_.insert(make_pair(kbhash, kb));
     }
     insert_keyblock(0, nullptr, true);
 
     munmap(sbase, fsize);
     close(fd);
-    LOG_INFO("Load from db file done");
+    LOG_INFO("Load from db file done, %d videos", db_size);
     break;
     } //end for(;;)
 
@@ -401,7 +400,8 @@ int VideoDB::Save()
 
     strcpy(s, FILE_SIG); s += strlen(FILE_SIG);   
     *(int *)s = (int)(db_.size()); s += sizeof(int);
-    *(int *)s = (int)(table_.size()); s += sizeof(int);
+    /* now do not store table_.size(), cuz no index stored */
+    *(int *)s = (int)(0); s += sizeof(int);
 
     /* write items in db_ */
     for(const auto &d : db_) {
@@ -420,11 +420,12 @@ int VideoDB::Save()
     }
 
     /* write items in table_ */
+    /* no index stored in datafile 
     for(const auto &d : table_) {
         check_flush(sizeof(uint32_t) + sizeof(int));
         *(uint32_t*)s = d.first; s += sizeof(uint32_t);
         *(int*)s = (int)(d.second->size()); s += sizeof(int);
-        /* write items in a keyblock */
+        // write items in a keyblock 
         for(const auto &i : *(d.second)) {
             check_flush(sizeof(uint64_t) + sizeof(int) + 
                     i.second->name_.size() + 1);
@@ -434,6 +435,7 @@ int VideoDB::Save()
             *s++ = '\0';
         }
     }
+    */
     
     check_flush(BS + 1);
     fdatasync(fd);
@@ -444,6 +446,33 @@ int VideoDB::Save()
     snprintf(fn, 255, "%s/videomatch_log.bin", db_path_.c_str());
     unlink(fn);
     return 0;
+}
+
+void VideoDB::add_frames_to_index(const DataItem *di)
+{
+    /* call from other functions, do not lock again */
+
+    unordered_set<uint64_t> unique_frames;
+
+    /* frames to be added may contain some duplicates */
+    for(const auto& k : di->frames_) {
+        if (k == EMPTY_FRAME)
+            continue;
+        unique_frames.insert(k);
+    }
+
+    for(const auto& k : unique_frames) {
+        KeyBlock *kb;
+        uint32_t k2 = key_shorten(k);
+        auto it = table_.find(k2);
+        if (it == table_.end()) {
+            kb = new KeyBlock;
+            table_.insert(make_pair(k2, kb));
+        } else
+            kb = it->second;
+        
+        kb->push_back(make_pair(k, const_cast<DataItem *>(di)));
+    }
 }
 
 int VideoDB::Add(const DataItem& data_item)
@@ -457,20 +486,8 @@ int VideoDB::Add(const DataItem& data_item)
 
     DataItem *di = new DataItem(data_item);
     db_.insert(make_pair(di->name_, di));
-    for(const auto &k : di->frames_) {
-        if (k == EMPTY_FRAME)
-            continue;
-        KeyBlock *kb;
-        uint32_t k2 = key_shorten(k);
-        auto it = table_.find(k2);
-        if (it == table_.end()) {
-            kb = new KeyBlock;
-            table_.insert(make_pair(k2, kb));
-        } else
-            kb = it->second;
-        
-        kb->push_back(make_pair(k, di));
-    }
+    add_frames_to_index(di);
+
     LOG_INFO("Video %s added, %d frames, KeyBlock size: %d",
             data_item.name_.c_str(), data_item.frames_.size(), table_.size());
     return 0;

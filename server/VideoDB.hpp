@@ -19,6 +19,10 @@ class DataItem
     friend class VideoDB;
     std::string name_;
     std::vector<uint64_t> frames_;
+
+    /* reference count is to avoid lock for too long time in VideoDB,
+       However since Remove() is not implemented in VideoDB,
+       current refcount is useless */
     mutable std::atomic<int> ref_;
     bool deleted_;
 
@@ -75,11 +79,12 @@ class VideoDB
 {
     typedef std::vector<std::pair<uint64_t, DataItem*>> KeyBlock;
     std::unordered_map<std::string, DataItem*> db_;
+
+    /* index for frames*/
     std::unordered_map<uint32_t, KeyBlock*> table_;
     mutable std::mutex mutex_;
 
     std::string db_path_;
-
 
     int get_candidates1(const std::vector<uint64_t>& frames, std::vector<DataItem*>& result) const;
     double check_candidate(DataItem *data_item1, const DataItem& data_item2) const;

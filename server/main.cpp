@@ -11,11 +11,20 @@
 using namespace http_server;
 
 
-static int my_handler(HttpConnPtr conn)
+namespace {
+int my_handler(HttpConnPtr conn)
 {
     using VideoMatch::RequestProcessor;
     std::string body;
     
+    /* 
+       support operation:
+       GET /info
+       GET /save
+       GET /exit
+       GET /querykey/$key
+       POST json to add/query by frames
+    */
     auto prefixeq = [](const std::string& base, const std::string& match) {
         if (base.size() > match.size()
                 && strncasecmp(base.c_str(), match.c_str(), match.size()) == 0)
@@ -29,7 +38,8 @@ static int my_handler(HttpConnPtr conn)
             RequestProcessor::Info(body);
         } else if (conn->path() == "/exit") {
             exit(0);
-        } else {
+        } else if (conn->path() == "/save" 
+                || prefixeq(conn->path(), "/querykey/")) {
             if (!conn->in_threadpool()) 
                 return HTTP_SWITCH_THREAD;
 
@@ -40,12 +50,19 @@ static int my_handler(HttpConnPtr conn)
                 std::string key = conn->path().substr(strlen("/querykey/"));
                 RequestProcessor::Query(key, body);
             }
+        } else {
+            /* show help info */
+            body = "Command:\r\n"
+                "GET /exit\r\n"
+                "GET /info\r\n"
+                "GET /save\r\n"
+                "GET /querykey/$key\r\n";
         }
     } else if (conn->req_type() == HTTP_POST) {
         if (!conn->in_threadpool()) 
             return HTTP_SWITCH_THREAD;
 
-            /* all requests about match engine should be processed in thread pool */
+        /* all requests about match engine should be processed in thread pool */
         RequestProcessor::Process(conn->post_data(), body);
     }
 
@@ -54,6 +71,7 @@ static int my_handler(HttpConnPtr conn)
     conn->set_header("Content-Type", "text/html");
     return HTTP_200;
 }
+
 
 static void print_usage(const char *sexec)
 {
@@ -64,6 +82,8 @@ static void print_usage(const char *sexec)
            "\t-L --log-level <level> [default info]         the log level, one in [debug|info|error]\n"
           , sexec);
 }
+
+} //end of namespace
 
 int main(int argc, char *argv[])
 {

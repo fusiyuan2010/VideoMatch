@@ -16,8 +16,7 @@
 using namespace std;
 
 
-namespace VideoMatch
-{
+namespace {
 
 static int bit1_table[256];
 static pthread_once_t bit1_table_inited = PTHREAD_ONCE_INIT;
@@ -47,6 +46,12 @@ static inline int bit1count(uint64_t i)
     return ret;
 }
 
+
+} // end of namespace 
+
+namespace VideoMatch
+{
+
 VideoDB::VideoDB(const string& db_path)
     : db_path_(db_path)
 {
@@ -70,8 +75,10 @@ int VideoDB::get_candidates1(const vector<uint64_t>& frames, vector<DataItem*>& 
 
     lock_guard<mutex> lock(mutex_);
     for(const auto k : unique_frames) {
+        /* skip empty frame, since too much videos may contain it */
         if (k == EMPTY_FRAME)
             continue;
+
         uint32_t k2 = key_shorten(k);
         auto it = table_.find(k2);
         if (it == table_.end())
@@ -107,15 +114,14 @@ int VideoDB::get_candidates1(const vector<uint64_t>& frames, vector<DataItem*>& 
     2. (Or maybe only if 1's result not good enough) Check MDF,
        measure average min diff bits count (check only some samples, like 50 at most),
        and the order of MDF in the other video.
-
-
 */
-/* find MDF from a range of frames in base */
+
 static inline int diff_bits(uint64_t key1, uint64_t key2)
 {
     return bit1count(key1 ^ key2);
 }
 
+/* find MDF from a range of frames in base */
 static int min_diff_bits(uint64_t key, const vector<uint64_t>& base, int start, int end, int& pos)
 {
     int md = 64;
@@ -151,7 +157,6 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
     /* state of each frame :
        255 - no match
        0 - 63 diff bits;
-       
     */
     vector<uint8_t> bmark(bf.size(), (uint8_t)255); 
     vector<uint8_t> cmark(cf.size(), (uint8_t)255); 
@@ -167,6 +172,7 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
         for(int j = 1; cpos + j < (int)cf.size() && bpos + j < (int)bf.size(); j++) {
             int d = diff_bits(cf[cpos + j], bf[bpos + j]);
             if (d > STOP_CHECK_BITS)
+                /* stop when two frame differ too much */
                 break;
             if (d < cmark[cpos + j])
                 cmark[cpos + j] = d;
@@ -186,38 +192,53 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
     };
 
     int skipped = 0;
+    /* check all frames, with different strategies */
     for(size_t i = 0; i < cf.size(); i++) {
+        /* matched frame already found for this one(good enough match), 
+         skip it for speed */
         if (cmark[i] < GOOD_BITS)
             continue;
 
         if (base_frames.count(cf[i]) > 0) {
             /* CMF found */
             cmark[i] = 0;
+
+            /* may be matched to several positions in base video,
+             check all of them if that position was not checked before */
             auto range = base_frames.equal_range(cf[i]);
             for(auto it = range.first; it != range.second; it++) {
                 if (bmark[it->second] < GOOD_BITS) {
+                    /* alreadly matched region, skip */
                     bmark[it->second] = 0;
                     continue;
                 }
                 bmark[it->second] = 0;
+                /* compare frames near this one, until unmatch found */
                 check_range(i, it->second);
             }
+            /* no need to check MDF if CMF found */
             continue;
         }
 
+        /* skip some frames for MDF checking to acceralate */
         if (++skipped < skip_itvl) 
             continue;
         skipped = 0;
 
         int mdf_pos = 0;  
         int diff =  min_diff_bits(cf[i], bf, 0, bf.size(), mdf_pos);
+
+        /* no possible similar frame found */
         if (diff > CHECK_BITS)
             continue;
+
+        if (diff < bmark[mdf_pos])
+            bmark[mdf_pos] = diff;
         cmark[i] = bmark[mdf_pos] = diff;
         check_range(i, mdf_pos);
     }
 
-    /* get score from overlapped frames, based on their ranges and avg diff bits */
+    /* score is like a combination of  average diff bits of frames, and length of overlapped region */
     /* CUT_RATIO means the begining and the end of video does not count */
     static const double CUT_RATIO = 0.00;
     int total_diff_bits = 0, cnt = 0;
@@ -229,7 +250,12 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
         }
     }
 
-    score1 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (cf.size() * (1 - 2 * CUT_RATIO) + 1));
+    if (cf.size() * bf.size() == 0) 
+        /* zero frame? hardly to happen */
+        return 0.0;
+
+    if (!cnt) cnt = 1; /* avoid zero div */
+    score1 = (((double)16 - total_diff_bits / cnt) / 16) * (cnt / (cf.size() * (1 - 2 * CUT_RATIO)));
 
     total_diff_bits = 0; cnt = 0;
     for(size_t i = bf.size() * CUT_RATIO * 100 / 100 ; i < bf.size() * (1 - CUT_RATIO) * 100 / 100; i++) {
@@ -238,7 +264,8 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
             cnt++;
         }
     }
-    score2 = (((double)16 - total_diff_bits / (cnt + 1)) / 16) * (cnt / (bf.size() * (1 - 2 * CUT_RATIO) + 1));
+    if (!cnt) cnt = 1; /* avoid zero div */
+    score2 = (((double)16 - total_diff_bits / cnt) / 16) * (cnt / (bf.size() * (1 - 2 * CUT_RATIO)));
 
     LOG_DEBUG("Time consumed %ld us, score1 : %f, score2: %f", tc.GetTimeMicroS(), score1, score2);
     return score1 * score2;
@@ -478,7 +505,9 @@ void VideoDB::add_frames_to_index(const DataItem *di)
 int VideoDB::Add(const DataItem& data_item)
 {
     lock_guard<mutex> lock(mutex_);
+
     auto it = db_.find(data_item.name_);
+    /* duplicate key name not allowed, nor overwrite when happened */
     if (it != db_.end()) {
         LOG_INFO("Video %s exists", data_item.name_.c_str());
         return -1;
@@ -513,6 +542,8 @@ int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& resu
     vector<DataItem *> candidates;
     TimeCounter tc;
 
+    /* query operation has two steps:  find out all candidates that contains any frame in this video 
+       then check each candidate by check_candidate() */
     int cand_num = get_candidates1(data_item.frames_, candidates);
     LOG_DEBUG("level1 candidate num: %d", cand_num);
     for(auto i : candidates) {
@@ -530,6 +561,7 @@ int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& resu
     return (int)result.size();
 }
 
+/* Not impelemented */
 int VideoDB::Remove(const string& video_name)
 {
     lock_guard<mutex> lock(mutex_);
@@ -551,6 +583,7 @@ int VideoDB::Count() const
     return db_.size();
 }
 
+/* duplicate frames in one video do not count */
 int VideoDB::FramesCount() const
 {
     lock_guard<mutex> lock(mutex_);

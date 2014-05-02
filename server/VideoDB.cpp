@@ -309,6 +309,11 @@ int VideoDB::Load()
     }
     db_size = *(int*)s; s += sizeof(int);
     kb_num = *(int*)s; s += sizeof(int);
+
+    int *hslot_cnt = new int[1 << HSIZE_BITS];
+    for(uint32_t i = 0; i < (1 << HSIZE_BITS); i++)
+        hslot_cnt[i] = 0;
+
     for(int i = 0; i < db_size; i++) {
         /* video name */
         int vnlen = *(int*)s; s += sizeof(int);
@@ -317,15 +322,30 @@ int VideoDB::Load()
         DataItem *di = new DataItem(vn);
         int fc = *(int*)s; s += sizeof(int);
         for(int j = 0; j < fc; j++) {
-            di->Push(*(uint64_t*)s);
+            uint64_t hash = *(uint64_t*)s;
+            di->Push(hash);
+            hslot_cnt[key_shorten(hash)]++;
             s += sizeof(uint64_t);
         }
         db_.insert(make_pair(vn, di));
-        /* newer version DB file do not store index, 
-         insteadly build index while loading */
-        add_frames_to_index(di);
     }
 
+    /* pre-reserve key block(vector), to reduce memory use */
+    for(uint32_t i = 0; i < (1 << HSIZE_BITS); i++) {
+        if (hslot_cnt[i]) {
+            KeyBlock *kb = new KeyBlock;
+            kb->reserve(hslot_cnt[i]);
+            table_.insert(make_pair(i, kb));
+        }
+    }
+    delete[] hslot_cnt;
+
+    for(const auto& i : db_) {
+        /* newer version DB file do not store index, 
+         insteadly build index while loading */
+        add_frames_to_index(i.second);
+    }
+        
     KeyBlock *nkb = nullptr;
     uint32_t last_kbhash = 0;
 

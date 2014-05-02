@@ -77,6 +77,8 @@ public:
 
 class VideoDB 
 {
+    static const int HSIZE_BITS = 20;
+
     typedef std::vector<std::pair<uint64_t, DataItem*>> KeyBlock;
     std::unordered_map<std::string, DataItem*> db_;
 
@@ -91,7 +93,7 @@ class VideoDB
     uint32_t key_shorten(uint64_t raw) const
     {
         /* 2 Million (21bits) slots*/
-        return (raw >> (64 - 21));
+        return (raw >> (64 - HSIZE_BITS));
     }
 
     void add_frames_to_index(const DataItem *di);

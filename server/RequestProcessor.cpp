@@ -66,7 +66,7 @@ void RequestProcessor::Process(const std::string& request, std::string& reply)
             bad_rpl("No 'frames' field");
             return;
         }
-        DataItem data_item(v["name"].asString());
+        VideoDB::DataItem data_item(v["name"].asString());
         Json::Value& frames = v["frames"];
         int fc = frames.size();
         for(int i = 0; i < fc; i++) {
@@ -80,7 +80,7 @@ void RequestProcessor::Process(const std::string& request, std::string& reply)
             bad_rpl("No 'frames' field");
             return;
         }
-        DataItem data_item("QUERY"); // name actually not required
+        VideoDB::DataItem data_item("QUERY"); // name actually not required
         Json::Value& frames = v["frames"];
         int fc = frames.size();
         for(int i = 0; i < fc; i++) {
@@ -121,28 +121,42 @@ void RequestProcessor::Info(std::string& reply)
     reply = writer.write(rv);
 }
 
-void RequestProcessor::Query(const std::string& key, std::string& reply)
+void RequestProcessor::Query(const std::string& key, std::string& reply, bool plain)
 {
     Json::StyledWriter writer;
     Json::Value rv;
-    DataItem data_item(""); // name not required
+    VideoDB::DataItem data_item(""); // name not required
     std::vector<std::pair<std::string, double>> result;
 
     TimeCounter tc;
 
+    reply.clear();
     if (vdb_->Query(key, data_item) < 0) {
+        if (plain) {
+            return;
+        }
         rv["code"] = (Json::Value::Int)(-1);
         rv["msg"] = "Key not found";
     } else {
         rv["code"] = vdb_->Query(data_item, result);
         for(size_t i = 0; i < result.size(); i++) {
             Json::Value item;
-            item["name"] = result[i].first;
-            item["score"] = result[i].second;
-            rv["result"][(int)i] = item;
+            if (plain) {
+                char buf[128];
+                snprintf(buf, 128, "%s %s %f\n", key.c_str(), result[i].first.c_str(), result[i].second);
+                reply.append(buf);
+            } else {
+                item["name"] = result[i].first;
+                item["score"] = result[i].second;
+                rv["result"][(int)i] = item;
+            }
         }
-        rv["time_ms"] = (Json::Value::Int)tc.GetTimeMilliS();
+        if (!plain)
+            rv["time_ms"] = (Json::Value::Int)tc.GetTimeMilliS();
     }
+
+    if (plain) return;
+
     reply = writer.write(rv);
 }
 

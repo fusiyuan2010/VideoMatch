@@ -23,7 +23,7 @@ public:
     static void Info(std::string& reply);
     
     /* query duplicate video by key, the 'key' has to exist in VDB */
-    static void Query(const std::string& key, std::string& reply);
+    static void Query(const std::string& key, std::string& reply, bool plain);
 
     /* save the snapshot of current state into a file */
     static void SaveDB();

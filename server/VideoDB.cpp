@@ -95,6 +95,11 @@ int VideoDB::get_candidates1(const vector<uint64_t>& frames, vector<DataItem*>& 
     }
 
     for(auto i : result_set) {
+        /* skip video whose length differs too much, for long enough video */
+        if (i->uniq_frm_cnt > 60 && (
+                i->uniq_frm_cnt > unique_frames.size() * 1.5
+                || i->uniq_frm_cnt * 1.5 < unique_frames.size()))
+            continue;
         i->inc_ref();
         result.push_back(i);
     }
@@ -143,8 +148,8 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
     /* if no CMF found, decide how many frames to skip to check MDF, 
        since finding MDF is O(n), it's not good to check every frame for MDF */
     static const int SKIP_SPLIT_PARTS = 32;
-    static const int CHECK_BITS = 8;
-    static const int STOP_CHECK_BITS = 16;
+    static const int CHECK_BITS = 12;
+    static const int STOP_CHECK_BITS = 28;
     static const int GOOD_BITS = 4;
 
     unordered_multimap<uint64_t, int> base_frames;
@@ -255,7 +260,8 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
         return 0.0;
 
     if (!cnt) cnt = 1; /* avoid zero div */
-    score1 = (((double)16 - total_diff_bits / cnt) / 16) * (cnt / (cf.size() * (1 - 2 * CUT_RATIO)));
+    if (total_diff_bits / cnt > 18) return 0.0;
+    score1 = (((double)18 - total_diff_bits / cnt) / 18) * (cnt / (cf.size() * (1 - 2 * CUT_RATIO)));
 
     total_diff_bits = 0; cnt = 0;
     for(size_t i = bf.size() * CUT_RATIO * 100 / 100 ; i < bf.size() * (1 - CUT_RATIO) * 100 / 100; i++) {
@@ -265,7 +271,8 @@ double VideoDB::check_candidate(DataItem *data_item1, const DataItem& data_item2
         }
     }
     if (!cnt) cnt = 1; /* avoid zero div */
-    score2 = (((double)16 - total_diff_bits / cnt) / 16) * (cnt / (bf.size() * (1 - 2 * CUT_RATIO)));
+    if (total_diff_bits / cnt > 18) return 0.0;
+    score2 = (((double)18 - total_diff_bits / cnt) / 18) * (cnt / (bf.size() * (1 - 2 * CUT_RATIO)));
 
     LOG_DEBUG("Time consumed %ld us, score1 : %f, score2: %f", tc.GetTimeMicroS(), score1, score2);
     return score1 * score2;
@@ -495,7 +502,7 @@ int VideoDB::Save()
     return 0;
 }
 
-void VideoDB::add_frames_to_index(const DataItem *di)
+void VideoDB::add_frames_to_index(DataItem *di)
 {
     /* call from other functions, do not lock again */
 
@@ -508,6 +515,7 @@ void VideoDB::add_frames_to_index(const DataItem *di)
         unique_frames.insert(k);
     }
 
+    di->uniq_frm_cnt = unique_frames.size();
     for(const auto& k : unique_frames) {
         KeyBlock *kb;
         uint32_t k2 = key_shorten(k);
@@ -518,7 +526,7 @@ void VideoDB::add_frames_to_index(const DataItem *di)
         } else
             kb = it->second;
         
-        kb->push_back(make_pair(k, const_cast<DataItem *>(di)));
+        kb->push_back(make_pair(k, di));
     }
 }
 
@@ -558,6 +566,7 @@ int VideoDB::Query(const string& video_name, DataItem& data_item) const
 
 int VideoDB::Query(const DataItem& data_item, vector<pair<string, double>>& result) const
 {
+    /* 0.3 * 0.3 */
     static const double threshold = 0.09;
     vector<DataItem *> candidates;
     TimeCounter tc;

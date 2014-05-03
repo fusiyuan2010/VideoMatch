@@ -39,6 +39,7 @@ int my_handler(HttpConnPtr conn)
         } else if (conn->path() == "/exit") {
             exit(0);
         } else if (conn->path() == "/save" 
+                || prefixeq(conn->path(), "/querykeyplain/")
                 || prefixeq(conn->path(), "/querykey/")) {
             if (!conn->in_threadpool()) 
                 return HTTP_SWITCH_THREAD;
@@ -48,7 +49,10 @@ int my_handler(HttpConnPtr conn)
                 body = "Done\n";
             } else if (prefixeq(conn->path(), "/querykey/")) {
                 std::string key = conn->path().substr(strlen("/querykey/"));
-                RequestProcessor::Query(key, body);
+                RequestProcessor::Query(key, body, false);
+            } else if (prefixeq(conn->path(), "/querykeyplain/")) {
+                std::string key = conn->path().substr(strlen("/querykeyplain/"));
+                RequestProcessor::Query(key, body, true);
             }
         } else {
             /* show help info */

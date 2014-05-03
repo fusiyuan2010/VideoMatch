@@ -14,69 +14,78 @@ namespace VideoMatch
 {
 
 
-class DataItem
-{
-    friend class VideoDB;
-    std::string name_;
-    std::vector<uint64_t> frames_;
-
-    /* reference count is to avoid lock for too long time in VideoDB,
-       However since Remove() is not implemented in VideoDB,
-       current refcount is useless */
-    mutable std::atomic<int> ref_;
-    bool deleted_;
-
-    void inc_ref() 
-    {
-        ref_++;
-    }
-
-    void dec_ref()
-    {
-        if (--ref_ == 0 && deleted_) {
-            delete this;
-        }
-    }
-
-    void destroy()
-    {
-        deleted_ = true;
-        if (ref_ == 0) 
-            delete this;
-    }
-
-public:
-    DataItem(const std::string& name)
-        : name_(name), ref_(0), deleted_(false) 
-    {
-    }
-
-    DataItem(const DataItem& data_item)
-        : name_(data_item.name_), 
-        frames_(data_item.frames_),ref_(0), deleted_(false)
-    {
-    }
-
-    DataItem& operator=(const DataItem& data_item) 
-    {
-        name_ = data_item.name_;
-        frames_ = data_item.frames_;
-        ref_ = 0;
-        deleted_ = false;
-        return *this;
-    }
-
-    ~DataItem() = default;
-
-    void Push(const uint64_t frame)
-    {
-        frames_.push_back(frame);
-    }
-};
 
 
 class VideoDB 
 {
+
+public:
+    class DataItem
+    {
+        friend class VideoDB;
+        /* do not need init, 
+         will be set in VideoDB::add_frame_to_index */
+        size_t uniq_frm_cnt;
+        std::string name_;
+        std::vector<uint64_t> frames_;
+
+        /* reference count is to avoid lock for too long time in VideoDB,
+           However since Remove() is not implemented in VideoDB,
+           current refcount is useless */
+        mutable std::atomic<int> ref_;
+        bool deleted_;
+
+        void inc_ref() 
+        {
+            ref_++;
+        }
+
+        void dec_ref()
+        {
+            if (--ref_ == 0 && deleted_) {
+                delete this;
+            }
+        }
+
+        void destroy()
+        {
+            deleted_ = true;
+            if (ref_ == 0) 
+                delete this;
+        }
+
+    public:
+        DataItem(const std::string& name)
+            : name_(name), ref_(0), deleted_(false) 
+        {
+        }
+
+        DataItem(const DataItem& data_item)
+            : name_(data_item.name_), 
+            frames_(data_item.frames_),ref_(0), deleted_(false)
+        {
+        }
+
+        DataItem& operator=(const DataItem& data_item) 
+        {
+            name_ = data_item.name_;
+            frames_ = data_item.frames_;
+            ref_ = 0;
+            deleted_ = false;
+            return *this;
+        }
+
+        ~DataItem() = default;
+
+        void Push(const uint64_t frame)
+        {
+            frames_.push_back(frame);
+        }
+    };
+
+
+    //////////////////////////////////////////////////////////
+private:
     static const int HSIZE_BITS = 20;
 
     typedef std::vector<std::pair<uint64_t, DataItem*>> KeyBlock;
@@ -96,7 +105,7 @@ class VideoDB
         return (raw >> (64 - HSIZE_BITS));
     }
 
-    void add_frames_to_index(const DataItem *di);
+    void add_frames_to_index(DataItem *di);
 
 public:
     VideoDB(const std::string& db_path);

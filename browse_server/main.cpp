@@ -46,11 +46,12 @@ class VideoManager
 
         while (get_size() > cache_size_ && tail_ != nullptr) {
             DataItem *di = tail_;
-            tail_ = tail_->prev_;
             if (head_ == tail_)
                 head_ = nullptr;
+            tail_ = tail_->prev_;
             if (tail_)
                 tail_->next_ = nullptr;
+            data_.erase(di->name_);
             delete di;
         }
     }
@@ -191,6 +192,8 @@ public:
             di->next_ = head_;
             head_->prev_ = di;
             head_ = di;
+            if (tail_ == nullptr)
+                tail_ = di;
         }
 
         auto it2 = di->frames_.find(frameid);
@@ -204,10 +207,15 @@ public:
 };
 
 VideoManager *gvm = nullptr;
+uint64_t bytes_out_total = 0;
 
 /* 
-http://xxxxx/img/######/00000#.jpg
-http://xxxxx/browse/#######/000000#.html
+http://xxxxx/img/#key/#id
+http://xxxxx/browse/#key/#id
+http://xxxxx/browse/#key/
+
+http://xxxxx/browseall/#key/
+
  */
 
 int my_handler(HttpConnPtr conn)
@@ -257,7 +265,25 @@ int my_handler(HttpConnPtr conn)
                 "<area shape=\"rect\" coords=\"0,0,300,600\" href=\"" + prevaddr + "\" alt=\"Sun\">"
                 "<area shape=\"rect\" coords=\"300,0,600,600\" href=\"" + nextaddr + "\" alt=\"Sun\">"
                 "</map></body></html>";
+        conn->set_header("Content-Type", "text/html");
+    } else if (params[0] == "browseall") {
+        int frm_cnt = gvm->LookupSize(params[1]);
+        if (frm_cnt < 0)
+            return HTTP_404;
 
+        char titlestr[32];
+        snprintf(titlestr, 32, "Total %d frames", frm_cnt);
+        body =  "<html>"
+                "<head><title>" + params[1] + "</title></head>\n"
+                "<body><center><h2>" + titlestr + "</h2></center>\n";
+        for(int i = 1; i <= frm_cnt; i++) {
+            char curidstr[32];
+            snprintf(curidstr, 32, "%d", i);
+            body += "<center><img src=\"/image/" + params[1] + "/" + curidstr + "\""
+                "align=\"middle\" width=600></center>\n";
+            body += "<hr noshade size=4 width=600>";
+        }
+        body += "</body></html>";
         conn->set_header("Content-Type", "text/html");
     } else if (params[0] == "image") {
         //if (!conn->in_threadpool())
@@ -270,6 +296,8 @@ int my_handler(HttpConnPtr conn)
         return HTTP_404;
     }
     
+    bytes_out_total += body.size();
+    printf("%lu Bytes output in total since server start\n", bytes_out_total);
     conn->set_body(body);
     conn->set_header("Server", "Video Browse Server 1.0");
     return HTTP_200;
@@ -291,7 +319,7 @@ int main(int argc, char *argv[])
 {
     const char *listfile = "./videolist.txt";
     int port = 8965;
-    uint64_t cache_size = 1024;
+    uint64_t cache_size = 1024 * 1048576ull;
 
     static struct option long_options[] = {
         {"list",     required_argument, 0,  'l' },

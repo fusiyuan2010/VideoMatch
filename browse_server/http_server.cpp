@@ -132,7 +132,8 @@ void HttpConnection::begin_response()
         set_header("Content-Length", body_.size());
     if (headers_.count("Server") == 0) 
         set_header("Server", "SimpleWebSvr/1.0");
-    set_header("Connection", "close");
+    if (headers_.count("Connection") == 0) 
+        set_header("Connection", "Keep-Alive");
 
     std::vector<boost::asio::const_buffer> buffers;
     if (http_ret_ >= 0 && http_ret_ < HTTP_END) {

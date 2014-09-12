@@ -3,16 +3,19 @@
 #include <Log.hpp>
 #include <RequestProcessor.hpp>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <strings.h>
 #include <getopt.h>
 
 
-using namespace http_server;
 
 
 namespace {
-int my_handler(HttpConnPtr conn)
+
+using namespace tws;
+
+int my_handler(Response& resp, const Request& req)
 {
     using VideoMatch::RequestProcessor;
     std::string body;
@@ -32,26 +35,26 @@ int my_handler(HttpConnPtr conn)
         return false;
     };
  
-    if (conn->req_type() == HTTP_GET) {
-        if (conn->path() == "/info") {
+    if (req.type() == HTTP_GET) {
+        if (req.path() == "/info") {
             /* Show DB info, need not in thread pool */
             RequestProcessor::Info(body);
-        } else if (conn->path() == "/exit") {
+        } else if (req.path() == "/exit") {
             exit(0);
-        } else if (conn->path() == "/save" 
-                || prefixeq(conn->path(), "/querykeyplain/")
-                || prefixeq(conn->path(), "/querykey/")) {
-            if (!conn->in_threadpool()) 
+        } else if (req.path() == "/save" 
+                || prefixeq(req.path(), "/querykeyplain/")
+                || prefixeq(req.path(), "/querykey/")) {
+            if (!req.in_threadpool()) 
                 return HTTP_SWITCH_THREAD;
 
-            if (conn->path() == "/save") {
+            if (req.path() == "/save") {
                 RequestProcessor::SaveDB();
                 body = "Done\n";
-            } else if (prefixeq(conn->path(), "/querykey/")) {
-                std::string key = conn->path().substr(strlen("/querykey/"));
+            } else if (prefixeq(req.path(), "/querykey/")) {
+                std::string key = req.path().substr(strlen("/querykey/"));
                 RequestProcessor::Query(key, body, false);
-            } else if (prefixeq(conn->path(), "/querykeyplain/")) {
-                std::string key = conn->path().substr(strlen("/querykeyplain/"));
+            } else if (prefixeq(req.path(), "/querykeyplain/")) {
+                std::string key = req.path().substr(strlen("/querykeyplain/"));
                 RequestProcessor::Query(key, body, true);
             }
         } else {
@@ -62,22 +65,22 @@ int my_handler(HttpConnPtr conn)
                 "GET /save\r\n"
                 "GET /querykey/$key\r\n";
         }
-    } else if (conn->req_type() == HTTP_POST) {
-        if (!conn->in_threadpool()) 
+    } else if (req.type() == HTTP_POST) {
+        if (!req.in_threadpool()) 
             return HTTP_SWITCH_THREAD;
 
         /* all requests about match engine should be processed in thread pool */
-        RequestProcessor::Process(conn->post_data(), body);
+        RequestProcessor::Process(req.postdata(), body);
     }
 
-    conn->set_body(body);
-    conn->set_header("Server", "Video Match Server 1.0");
-    conn->set_header("Content-Type", "text/html");
+    resp.set_body(body);
+    resp.set_header("Server", "Video Match Server 1.0");
+    resp.set_header("Content-Type", "text/html");
     return HTTP_200;
 }
 
 
-static void print_usage(const char *sexec)
+void print_usage(const char *sexec)
 {
     printf("Usage: %s [opts]\n"
            "\t-p --port <port_number> [default 8964]        the server port\n"
@@ -139,10 +142,9 @@ int main(int argc, char *argv[])
     VideoMatch::VideoDB video_db(dir);
     video_db.Load();
 
-    boost::asio::io_service io_service;
     VideoMatch::RequestProcessor::SetVideoDB(&video_db);
-    http_server::HttpServer http_server(io_service, port, &my_handler);
-    io_service.run();
+    tws::HttpServer http_server(port, &my_handler, 4);
+    http_server.run();
 
     return 0;
 }

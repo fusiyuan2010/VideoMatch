@@ -51,7 +51,6 @@ int LogMsg(int curlevel,const char *sourceName,int sourceLine, const char *funct
 {
 	va_list ap;
 	FILE *fp = NULL;
-	int iSize;
     char functionName2[128] = {0};
 
     if (curlevel < g_log_level) return 0;

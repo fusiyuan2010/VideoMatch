@@ -6,7 +6,7 @@ DEBUG=-g
 CFLAGS=-std=c++11 -Wall -Wno-format -fPIC $(OPT) $(DEBUG) -DNG #-DAP #-DNG #-DREUTERS
 CC=g++
 LIBS=-ljsoncpp -pthread -ltws
-LIB_PATH=
+LIB_PATH=-L./
 INCLUDE_PATH=-I/usr/include/jsoncpp/ -I./
 
 OBJS=Log.o main.o RequestProcessor.o VideoDB.o 
